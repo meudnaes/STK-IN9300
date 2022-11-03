@@ -1,0 +1,983 @@
+---
+title: "Mandatory exercise 2"
+subtitle: "Elias Roland Udnæs"
+output: pdf_document
+date: "2022-10-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Source code for this notebook can be found at [https://github.com/meudnaes/STK-IN9300]
+
+# Exercise 1
+
+In this exercise, I study aquatic toxicity. First, I load the libraries I use for this exercise.
+
+```
+library(glmnet)       # ridge regression
+library(pracma)       # math functions (log-space)
+library(gam)          # general additive models
+library(rpart)        # trees
+library(rpart.plot)   # plotting trees
+```
+
+```{r echo=FALSE, include=FALSE}
+# import libraries
+library(glmnet)
+library(pracma)
+library(gam)
+library(rpart)
+library(rpart.plot)
+```
+
+The aquatic toxicity is measured through the variable LC50, in data the dataset `qsar_aquatic_toxicity.csv`. My goal is to find predictors for LC50 in the variables TPSA, SAacc, H050, MLOGP, RDCHI, GATS1p, nN, C040, and LC50. 
+
+## Data preparation
+
+Now, I load the dataset in R, and split the data in in a training and test set, with 2/3 of the data used for training, and 1/3 used for testing.
+
+```{r, echo=TRUE}
+# Set random seed
+set.seed(2022)
+
+# Variable names
+names = list('TPSA', 'SAacc', 'H050', 'MLOGP', 'RDCHI', 'GATS1p', 'nN', 'C040',
+             'LC50')
+
+# Load data
+toxicity <- read.table('qsar_aquatic_toxicity.csv', header = FALSE, sep=';',
+                       col.names = names)
+n = nrow(toxicity)
+ntrain = floor(2/3*n)
+
+# Train test split, 1/3 for test, 2/3 for train
+train.idx = sample(n, size=ntrain, replace=FALSE)
+
+train = toxicity[train.idx,]
+test = toxicity[-train.idx,]
+```
+
+I wish to explore both linear and dichotomous "count" variables (i.e. H050, nN, and C040). Therefore I split the data into linear effects (that is the original data set), and dichotomous (where the count variables are converted to 0 and 1).
+
+```{r, echo=TRUE}
+train.linear <- train
+test.linear <- test
+
+# Dichotomise count variables
+train.dic <- train
+test.dic <- test
+
+count.vars = list(3, 7, 8)
+for (i in count.vars){
+  train.dic[train.dic[,i] > 0, i] <- 1
+  test.dic[test.dic[,i] > 0, i] <- 1
+}
+```
+
+## Linear Regression
+
+I fit a linear model on both linear and dichotomous data sets, and calculate test and train errors.
+
+```{r, echo=TRUE}
+# Fit linear model
+linear.effects <- lm(LC50 ~ ., data = train.linear)
+dichotomous.variables <- lm(LC50 ~ ., data = train.dic)
+
+# Calculate train and test errors
+yhat.train.linear <- predict(linear.effects, train.linear)
+train.err.linear <- mean((train.linear$LC50-yhat.train.linear)^2)
+
+yhat.test.linear <- predict(linear.effects, test.linear)
+test.err.linear <- mean((test.linear$LC50-yhat.test.linear)^2)
+
+yhat.train.dic <- predict(dichotomous.variables, train.dic)
+train.err.dic <- mean((train.dic$LC50-yhat.train.dic)^2)
+
+yhat.test.dic <- predict(dichotomous.variables, test.dic)
+test.err.dic <- mean((test.dic$LC50-yhat.test.dic)^2)
+
+summary(linear.effects)
+summary(dichotomous.variables)
+```
+
+In the linear effects model, all variables except H050 and C040 are significant (p < 0.05). For the dichotomous model, all except the count variables are significant (p < 0.001). Since nN is not significant any longer, it means that it should not be dichotomized, and it has a linear effect on the response. For both models, the coefficients for H050 and C040 are small. Errors from the models are presented in the following table:
+
+```{r, echo=FALSE, results='asis'}
+
+cat("| **Linear effects** | **Dichotomous variables** | \n",
+    "| --- | --- | \n",
+    "| *Train error* | *Train error* | \n",
+    "| ", train.err.linear, " | ", train.err.dic, " | \n",
+    "| *Test error* | *Test error* | \n",
+    "| ", test.err.linear, " | ", test.err.dic, " | \n"
+    )
+```
+
+As we can see from the table, the models have approximately equal test errors. However, the errors are dependent on the train/test split. Therefore, I calculate the train and test errors from the two different models for 200 different train/test splits.
+
+```{r, echo=TRUE}
+# Calculate average train and test errors
+avg.train.err.linear <- 0
+avg.test.err.linear <- 0
+
+avg.train.err.dic <- 0
+avg.test.err.dic <- 0
+
+# 200 different train/test splits
+for (i in 1:200){
+  train.idx = sample(n, size=2/3*nrow(toxicity), replace=FALSE)
+  train = toxicity[train.idx,]
+  test = toxicity[-train.idx,]
+  
+  train.linear <- train
+  test.linear <- test
+  
+  train.dic <- train
+  test.dic <- test
+    
+  count.vars = list(3, 7, 8)
+  
+  for (i in count.vars){
+    train.dic[train.dic[,i] != 0, i] = 1
+    test.dic[test.dic[,i] != 0, i] = 1
+  }
+
+  linear.effects <- lm(LC50 ~ ., data = train.linear)
+  dichotomous.variables <- lm(LC50 ~ ., data = train.dic)
+  
+  yhat.train.linear <- predict(linear.effects, train.linear[,-9])
+  avg.train.err.linear <- avg.train.err.linear + mean((train.linear$LC50 -
+                                                         yhat.train.linear)^2)
+  
+  yhat.test.linear <- predict(linear.effects, test.linear[,-9])
+  avg.test.err.linear <- avg.test.err.linear + mean((test.linear$LC50 -
+                                                       yhat.test.linear)^2)
+  
+  yhat.train.dic <- predict(dichotomous.variables, train.dic[,-9])
+  avg.train.err.dic <- avg.train.err.dic + mean((train.dic$LC50 -
+                                                   yhat.train.dic)^2)
+  
+  yhat.test.dic <- predict(dichotomous.variables, test.dic[,-9])
+  avg.test.err.dic <- avg.test.err.dic + mean((test.dic$LC50 -
+                                                 yhat.test.dic)^2)
+}
+
+# Divide by 200 to get average
+avg.train.err.linear <- avg.train.err.linear/200
+avg.test.err.linear <- avg.test.err.linear/200
+avg.train.err.dic <- avg.train.err.dic/200
+avg.test.err.dic <- avg.test.err.dic/200
+
+```
+
+Average errors from the models are presented in the following table:
+
+```{r, echo=FALSE, results='asis'}
+
+cat("| **Linear effects** | **Dichotomous variables** | \n",
+    "| --- | --- | \n",
+    "| *Average train error* | *Average train error* | \n",
+    "| ", avg.train.err.linear, " | ", avg.train.err.dic, " | \n",
+    "| *Average test error* | *Average test error* | \n",
+    "| ", avg.test.err.linear, " | ", avg.test.err.dic, " | \n"
+    )
+```
+
+Now, we clearly see that the dichotomous model performs worse, with a higher average test error. This is because, by dichotomising the variables, information is lost. There might be effects that we miss by splitting the variables into two groups, e.g. effects on the response that are proportional to the variable.
+
+## Variable Selection
+
+Moving on, I investigate variable selection procedures. I perform backward elimination and forward selection with two different stopping criteria: AIC and BIC.
+
+```{r echo=TRUE}
+# Same train test split as the first one, i.e. same random seed
+set.seed(51)
+
+# Train test split, 1/3 for test, 2/3 for train
+train.idx = sample(n, size=2/3*nrow(toxicity), replace=FALSE)
+train = toxicity[train.idx,]
+test = toxicity[-train.idx,]
+
+# The scopes of the models
+# Model with all variables
+null.model <- lm(LC50 ~ 1, data = as.data.frame(train))
+# Null model
+full.model <- lm(LC50 ~ ., data = as.data.frame(train))
+
+
+# Forwards selection
+# AIC stopping criteria
+model.forwards.AIC <- step(null.model, scope=list(upper=full.model), 
+                         direction="forward", trace=0)
+# BIC stopping criteria, k = log n
+model.forwards.BIC <- step(null.model, scope=list(upper=full.model), 
+                         direction="forward", k=log(nrow(train)), trace=0)
+
+# Backwards elimination
+# AIC stopping criteria
+model.back.AIC <- step(full.model, scope=list(lower=null.model), 
+                     direction="backward", trace=0)
+# BIC stopping criteria, k = log n
+model.back.BIC <- step(full.model, scope=list(lower=null.model), 
+                     direction="backward", k=log(nrow(train)), trace=0)
+
+# Train errors
+yhat.fAIC <- predict(model.forwards.AIC, train)
+yhat.bAIC <- predict(model.back.AIC, train)
+train.err.fAIC <- mean((yhat.fAIC - train$LC50)^2)
+train.err.bAIC <- mean((yhat.bAIC - train$LC50)^2)
+
+# Test errors
+yhat.fAIC <- predict(model.forwards.AIC, test)
+yhat.bAIC <- predict(model.back.AIC, test)
+test.err.fAIC <- mean((yhat.fAIC - test$LC50)^2)
+test.err.bAIC <- mean((yhat.bAIC - test$LC50)^2)
+
+# Check if we get the same models
+coef(model.back.AIC) == coef(model.back.BIC)
+coef(model.forwards.AIC) == coef(model.forwards.BIC)
+summary(model.back.AIC)
+summary(model.forwards.AIC)
+```
+
+I get the same model regardless of information criterion. The backwards and forwards selection choose the same variables, although the coefficients are not the same. Since the backwards and forwards selection choose the same models, it means that the correlation between the variables must be small. AIC and BIC choose the same model because either the variables are very significant (TPSA, SAacc, MLOGP, RDCHI, GATS1p, and nN all with $p < 10^{-4}$), or they were not significant at all (C040 and H050). Therefore, the model complexity was not relevant for the significant variables.
+
+## Ridge Regression
+
+Now, I try ridge regression. I use both cross-validation and bootstrap to determine the penalty parameter $\lambda$. The cross-validation is done by the `cv.glmnet` function, but bootstrap I had to do manually.
+
+```{r echo=TRUE}
+# Ridge regression
+nlambdas = 100
+lambda <- logspace(-2.5, 2.5, nlambdas)
+
+# Cross-validation
+# number of folds
+nfolds <- 10
+
+cv.ridge = cv.glmnet(x=as.matrix(train[,-9]), train$LC50, alpha=0,
+                     lambda=lambda, nfolds=nfolds)
+lambda.best = cv.ridge$lambda.min
+model.ridge = glmnet(as.matrix(train[,-9]), train$LC50, alpha=0, 
+                     lambda=lambda.best)
+
+# Bootstrap
+B <- 100
+subset.size <- ntrain%/%B
+
+set.seed(51)
+bootstrap.MSE <- matrix(NA, nrow = B, ncol = nlambdas)
+bootstrap.dev <- matrix(NA, nrow = B, ncol = nlambdas)
+
+for (b in 1:B){
+    
+  index <- sample(1:ntrain, replace = TRUE)
+  train.b = train[index,]
+  test.b = train[-index,]
+  
+  for (l in 1:nlambdas){
+    model <- glmnet(as.matrix(train.b[,-9]), train.b$LC50, alpha=0, 
+                    lambda=lambda[l])
+    
+     # Train MSE?
+    yhat.b = predict(model, as.matrix(test.b[,-9]))
+    bootstrap.MSE[b, l] = mean((yhat.b - test.b$LC50)^2)
+    
+    # deviance
+    bootstrap.dev[b, l] = deviance(model)
+  }
+}
+  
+bootstrap.dev <- apply(bootstrap.dev, 2, mean)
+bootstrap.MSE <- apply(bootstrap.MSE, 2, mean)
+
+# train error
+yhat = predict(model.ridge, as.matrix(train[,-9]))
+train.err.ridge = mean((yhat - train$LC50)^2)
+
+# test error
+yhat = predict(model.ridge, as.matrix(test[,-9]))
+test.err.ridge = mean((yhat - test$LC50)^2)
+
+plot(cv.ridge, type='l', col='red')#, ylim=c(1.3, 3.0))
+lines(log(lambda), bootstrap.MSE, col='blue', lwd=2)
+legend('topleft', legend=c("Cross-validation", "Bootstrap"), 
+       fill = c("blue","red"))
+```
+
+The above plot shows MSE against the penalty parameter $\lambda$, plotted on a logarithmic axis (the natural log). In terms of deviance, the best penalty parameter is `r toString(round(lambda.best, digits=5))`. With 100 bootstrap samples, the MSE is very similar to cross-validation, but the bootstrap MSE is always a little bit lower.
+
+## General Additive Model
+
+Moving on, I consider non-linear effects of the variables by fitting smoothing splines.
+
+```{r echo=TRUE}
+# fit using gam, use s() for smoothing spline
+model.gam1 <- gam(LC50 ~ 
+                  s(TPSA, df=3) + 
+                  s(SAacc, df=3) + 
+                  s(H050, df=3) + 
+                  s(MLOGP, df=3) + 
+                  s(RDCHI, df=3)+ 
+                  s(GATS1p, df=3)+ 
+                  s(nN, df=3)+ 
+                  s(C040, df=3), 
+                  data=train)
+
+model.gam2 <- gam(LC50 ~ 
+                  s(TPSA, df=6) + 
+                  s(SAacc, df=6) + 
+                  s(H050, df=6) + 
+                  s(MLOGP, df=6) + 
+                  s(RDCHI, df=6)+ 
+                  s(GATS1p, df=6)+ 
+                  s(nN, df=6), 
+                  data=train)
+
+
+# train error gam1
+yhat = predict(model.gam1, train)
+train.err.gam1 = mean((yhat - train$LC50)^2)
+
+# train error gam2
+yhat = predict(model.gam2, train)
+train.err.gam2 = mean((yhat - train$LC50)^2)
+
+# test error gam1
+yhat = predict(model.gam1, test)
+test.err.gam1 = mean((yhat - test$LC50)^2)
+
+# test error gam2
+yhat = predict(model.gam2, test)
+test.err.gam2 = mean((yhat - test$LC50)^2)
+
+summary(model.gam1)
+summary(model.gam2)
+```
+
+In the first gam model, all variables have two degrees of freedom. In the second model, all variables are modeled by smoothing splines with five degrees of freedom. The second model is more complex than the first. I investigate some of the variables. First, I plot MLOGP:
+
+```{r, echo=FALSE}
+par(mfrow=c(1,2))  
+plot(model.gam1, terms="s(MLOGP, df = 3)", main="Model 1")
+plot(model.gam2, terms="s(MLOGP, df = 6)", main="Model 2")
+```
+
+It looks like, from the plot, that model 2 has a better fit than model 1, since it includes the upwards curve on the negative values. Model 2 also has a lower p-value for this variable. 
+
+I also plot the variable nN:
+
+```{r, echo=FALSE}
+par(mfrow=c(1,2))  
+plot(model.gam1, terms="s(nN, df = 3)", main="Model 1")
+plot(model.gam2, terms="s(nN, df = 6)", main="Model 2")
+```
+
+In this plot, model 2 also includes more features, with a reversal for values higher than 4. However, it looks like the curve overfits to the data from the bend around 0. 
+
+## Trees
+
+The last models I try in this exercise, are trees. I fit a tree with a zero cost for additional complexity with the `rpart` function, and plot the tree.
+
+```{r echo=TRUE}
+# Trees, full complexity
+model.tree.full <- rpart(LC50 ~ ., data=train, control=rpart.control(cp=0))
+
+# train error tree
+yhat <- predict(model.tree.full, train)
+train.err.tree.full <- mean((yhat - train$LC50)^2)
+
+# test error tree
+yhat <- predict(model.tree.full, test)
+test.err.tree.full <- mean((yhat - test$LC50)^2)
+
+plot(model.tree.full)
+```
+
+The tree is not very large, but it might be too complex. I perform cross-validation to find the error relative to the tree complexity, and plot it easily with `rpart`'s function `plotcp`.
+
+```{r echo=TRUE}
+plotcp(model.tree.full)
+
+best.cp <- model.tree.full$cptable[which.min(model.tree.full$cptable[,"xerror"]),
+                                   "CP"]
+```
+
+From the complexity plot we see that the error decreases with cp, but it has a minimum at cp=`r round(best.cp, digits=4)`. Therefore, I use t
+this complexity parameter to prune the tree.
+
+```{r echo=TRUE}
+model.tree.pruned <- prune(model.tree.full, cp=best.cp)
+
+# train error tree
+yhat <- predict(model.tree.pruned, train)
+train.err.tree.pruned <- mean((yhat - train$LC50)^2)
+
+# test error tree
+yhat <- predict(model.tree.pruned, test)
+test.err.tree.pruned <- mean((yhat - test$LC50)^2)
+
+prp(model.tree.pruned)
+```
+
+The pruned tree has a smaller size than the original tree. This is because it has been pruned according to complexity.
+
+## Model Errors
+
+The following table presents all test/train errors from the original train/test split.
+
+```{r echo=FALSE, results='asis'}
+cat("| **Model** | **Test Error** | **Train Error** | \n",
+    "| --- | --- | --- | \n",
+    "|  *Linear effects* | ", test.err.linear, " | ", train.err.linear, " | \n",
+    "|  *Dichotomous variables* | ", test.err.dic, " | ", train.err.dic, " | \n",
+    "|  *Backwards selection* | ", test.err.bAIC, " | ", train.err.bAIC, " | \n",
+    "|  *Forwards selection* | ", test.err.fAIC, " | ", train.err.fAIC, " | \n",
+    "|  *Ridge regression* | ", test.err.ridge, " | ", train.err.ridge, " | \n",
+    "|  *GAM model 1* | ", test.err.gam1, " | ", train.err.gam1, " | \n",
+    "|  *GAM model 2* | ", test.err.gam2, " | ", train.err.gam2, " | \n",
+    "|  *Full tree* | ", test.err.tree.full, " | ", train.err.tree.full, " | \n",
+    "|  *Pruned tree* | ", test.err.tree.pruned, " | ", train.err.tree.pruned, " | \n"
+    )
+```
+
+All the models have a lower train than test error, which is expected. However, some models have a significantly smaller train error, while the test error is high. This is a clear sign of overfitting, and too high model complexity. This is evident in the trees, and also seen to some degree in the general additive models. 
+
+In this exercise, the linear effects model performed bets in terms of test error. I had expected the gam model to perform better, but this was not the case as this model suffered from overfitting. Likely, the gam models did not have the correct degrees of freedom of the variables. To improve this model, a variable selection procedure should be employed.
+
+# Exercise 2
+
+In this exercise, I study diabetes in the Pima Indian Diabetes data set. First, I load the libraries I use for this exercise.
+
+```
+library(mlbench) 
+library(class)
+library(gam)
+library(rpart)
+library(rpart.plot)
+library(adabag)
+```
+
+```{r echo=FALSE, include=FALSE}
+library(mlbench)       # contains data set
+library(class)         # k-nearest neighbours
+library(gam)           # general additive model
+library(rpart)         # trees
+library(rpart.plot)    # plotting trees
+library(randomForest)  # random forest
+library(adabag)        # bagging and ada boost
+```
+
+Diabetes is a binary classification, either positive (1) or negative (0). I will predict diabetes with the variables pregnant, glucose, pressure, triceps, insulin, mass, pedigree, age.
+
+## Data preparation
+
+Now, I load the dataset in R, and split the data in in a training and test set, with 2/3 of the data used for training, and 1/3 used for testing. I make sure that the ratio of entries with diabetes to no diabetes is the same in the training and test set. 
+
+```{r echo=TRUE}
+# load data
+data(PimaIndiansDiabetes)
+n <- nrow(PimaIndiansDiabetes)
+
+# Change "neg"/"pos" to 0/1
+PimaIndiansDiabetes$diabetes <- (PimaIndiansDiabetes$diabetes == "pos")*1.0
+
+pos <- seq(n)[PimaIndiansDiabetes$diabetes==1]
+neg <- seq(n)[PimaIndiansDiabetes$diabetes==0]
+
+npos <- length(pos)
+nneg <- length(neg)
+
+# set a seed
+set.seed(10261609)
+
+# Train test split, 1/3 for test, 2/3 for train
+# Draw similar pos and neg ratio into train and test
+train.pos.idx <- sample(pos, size=floor(2/3*npos), replace=FALSE)
+train.neg.idx <- sample(neg, size=floor(2/3*nneg), replace=FALSE)
+
+train.idx <- sample(c(train.pos.idx, train.neg.idx))
+test.idx <- sample(-train.idx)
+
+train <- PimaIndiansDiabetes[train.idx,]
+test <- PimaIndiansDiabetes[test.idx,]
+
+ntrain=nrow(train)
+ntest=nrow(test)
+```
+
+## k-Nearest Neighbours
+
+I start by classifying the patients in the data set with the k-nearest neighbour algorithm. I perform both 5-fold and LOO cross-validation, and calculate the cross-validation test error for values of `k` ranging from 1 to 75.
+
+```{r echo=TRUE}
+k.max <- 50
+
+cv.k5.err <- matrix(NA, nrow = 5, ncol = k.max)
+cv.LOO.err <- matrix(NA, nrow = ntrain, ncol = k.max)
+test.err <- numeric(k.max)
+train.err <- numeric(k.max)
+
+# 5 fold XV
+fold.size <- ntrain%/%5
+index <- sample(rep(1:5, ceiling(ntrain/5)))[1:ntrain]
+for (fold in 1:5){
+  
+  train.fold = train[index != fold, ]
+  test.fold = train[index == fold, ]
+  
+  for (k in 1:k.max){
+    yhat <- knn(train.fold[,-9], test.fold[,-9], train.fold$diabetes, k=k)
+    cv.k5.err[fold, k] = 1-mean(yhat==test.fold$diabetes)
+    # print(mean(yhat==test.fold$diabetes))
+  }
+}
+cv.k5.err <- apply(cv.k5.err, 2, mean)
+
+# LOO XV
+for (fold in 1:ntrain){
+  
+  train.fold <- train[-fold,]
+  test.fold <- train[fold,]
+  
+  for (k in 1:k.max){
+    yhat <- knn(train.fold[,-9], test.fold[,-9], train.fold$diabetes, k=k)
+    cv.LOO.err[fold, k] = 1-mean(yhat==test.fold$diabetes)
+  }
+}
+cv.LOO.err = apply(cv.LOO.err, 2, mean)
+
+# Test data
+for (k in 1:k.max){
+  yhat <- knn(train[,-9], test[,-9], train$diabetes, k=k)
+  test.err[k] <- 1-mean(yhat==test$diabetes)
+}
+
+plot(seq(1:k.max), cv.k5.err, type='l', col='blue', ylab='Error', 
+     xlab='neighbours (k)', ylim=c(0.22, 0.36))
+lines(seq(1:k.max), cv.LOO.err, col='red')
+lines(seq(1:k.max), test.err, col='black')
+legend('bottomright', legend=c("5-Fold", "LOO", "Test Error"), 
+       fill = c("blue","red","black"))
+```
+
+In the above plot, we can see the error from cross-validation and the test set. The number of neighbours giving the smallest errors are:
+
+```{r, echo=FALSE, results='asis'}
+cat("| min Test Error | min 5-fold error |  min LOO error | \n",
+    "| --- | --- | --- | \n",
+    "| k =",which.min(test.err) , "| k =",which.min(cv.k5.err) , "| k =",which.min(cv.LOO.err) , "| \n"
+    )
+```
+
+Later, I will choose k = 10 as the best parameter for kNN (we should not consider the test set to choose k). The test error at k=10 is `r test.err[10]`.
+
+## Generalised additive model with variable selection
+
+Now, I use variable selection for the gam. I make a list with the scope of variables to consider. The scope is all variables with degrees of freedom up to 4. Then I use ``step.gam` with backwards elimination to choose the best model. To get the binary predictions, we have to use the `plogis` function to convert the interval to [0, 1].
+
+```{r echo=TRUE}
+start.gam <- gam(diabetes ~ 
+                s(pregnant, df=5) + 
+                s(glucose, df=5) + 
+                s(pressure, df=5) + 
+                s(triceps, df=5) + 
+                s(insulin, df=5)+ 
+                s(mass, df=5)+ 
+                s(pedigree, df=5)+ 
+                s(age, df=5),
+                family=binomial(link="logit"),
+                data=train)
+
+scope_list = list(
+  "pregnant" = ~1 + pregnant + s(pregnant, df=2) + s(pregnant, df=3) + s(pregnant, df =4) + s(pregnant, df=5),
+  "glucose" = ~1 + glucose + s(glucose, df=2) + s(glucose, df=3) + s(glucose, df=4) + s(glucose, df=5),
+  "pressure" = ~1 + pressure + s(pressure, df=2) + s(pressure, df=3) + s(pressure, df=4) + s(pressure, df=5),
+  "triceps" = ~1 + triceps + s(triceps, df=2) + s(triceps, df=3) + s(triceps, df=4) + s(triceps, df=5),
+  "insulin" = ~1 + insulin + s(insulin, df=2) + s(insulin, df=3) + s(insulin, df=4) + s(insulin, df=5),
+  "mass" = ~1 + mass + s(mass, df=2) + s(mass, df=3) + s(mass, df=4) + s(mass, df=5),
+  "pedigree" = ~1 + pedigree + s(pedigree, df=2) + s(pedigree) + s(pedigree, df=4) + s(pedigree, df=5),
+  "age" = ~1 + age + s(age, df=2) + s(age, df=3) + s(age, df=4) + s(age, df=5)
+)
+
+best.gam <- step.Gam(start.gam, scope_list, direction = "backward", trace=0, family=binomial())
+
+yhat <- round(plogis(predict(best.gam, train)))
+gam.train.error <- 1 - mean(yhat==train$diabetes)
+
+yhat <- round(plogis(predict(best.gam, test)))
+gam.test.error <- 1 - mean(yhat==test$diabetes)
+
+summary(best.gam)
+```
+
+The best model only includes the variables glucose, pressure, insulin, mass, pedigree, and age, as shown in the summary. The selection procedure did not choose pregnant or triceps as relevant for the outcome. It seems that insulin and mass are the most complex variables, modelled by smoothing splines with five degrees of freedom. Pressure is modelled with a linear effect. For the best gam model, the train error is `r gam.train.error` and the test error is `r gam.test.error`. This is a significantly smaller test error than kNN.
+
+## Trees
+
+Here, I use classification trees. I consider bagging (both with “probability” and “consensus” votes), random forest and AdaBoost. First, I create a single tree, and prune it according to the best complexity parameter.
+
+```{r echo=TRUE}
+set.seed(25312)
+model.tree.full <- rpart(diabetes ~ ., data=train)
+best.cp <- model.tree.full$cptable[which.min(model.tree.full$cptable[,"xerror"]),
+                                   "CP"]
+model.tree.pruned <- prune(model.tree.full, cp=best.cp)
+
+# train error tree
+yhat <- round(predict(model.tree.pruned, train))
+train.err.tree.pruned <- 1-mean(yhat == train$diabetes)
+
+# test error tree
+yhat <- round(predict(model.tree.pruned, test))
+test.err.tree.pruned <- 1-mean(yhat == test$diabetes)
+
+prp(model.tree.pruned)
+```
+
+The tree is rather small after pruning. The train error is `r train.err.tree.pruned`, and the test error is `r test.err.tree.pruned`. This test error is higher than the gam, but lower than kNN.
+
+### Bagging
+
+Next, I use bagging by making multiple trees on bootstrapped data sets to improve the decision making. By default, bagging uses consensus vote, but I also loop over the individual trees to perform a probability vote. I then compute train and test errors from the different voting methods.
+
+```{r echo=TRUE}
+# Go back to "pos"/"neg" response for the bagging functions
+data(PimaIndiansDiabetes)
+
+train_str <- PimaIndiansDiabetes[train.idx,]
+test_str <- PimaIndiansDiabetes[test.idx,]
+
+nbag = 25
+
+# bagging model
+model.bagging <- bagging(diabetes~., data=train_str, mfinal=25)
+
+# train error bagging, consensus vote
+yhat <- predict(model.bagging, train_str)
+train.err.bagging.consensus <- yhat$error
+
+# test error bagging, consensus vote
+yhat <- predict(model.bagging, test_str)
+test.err.bagging.consensus <- yhat$error
+
+# probability vote
+ytrain = numeric(ntrain)
+ytest = numeric(ntest)
+for (i in 1:nbag){
+  ytrain.i <- predict(model.bagging$trees[i], train_str)
+  # convert list to vector
+  ytrain.i <- unlist(ytrain.i)
+  # only consider positive response
+  ytrain.i <- ytrain.i[(ntrain+1):(2*ntrain)]
+  # add probability
+  ytrain <- ytrain + ytrain.i
+  
+  ytest.i <- predict(model.bagging$trees[i], test_str)
+  # convert list to vector
+  ytest.i <- unlist(ytest.i)
+  # only consider positive response
+  ytest.i <- ytest.i[(ntest+1):(2*ntest)]
+  # add probability
+  ytest <- ytest + ytest.i
+}
+# Make the weighted decision
+ytrain = round(ytrain/nbag)
+ytest = round(ytest/nbag)
+
+train.err.bagging.prob <- 1-mean(ytrain == train$diabetes)
+test.err.bagging.prob <- 1-mean(ytest == test$diabetes)
+```
+
+The consensus vote gave a train error `r train.err.bagging.consensus`, and test error `r test.err.bagging.consensus`. The probability vote gave train error `r train.err.bagging.consensus`, and test error `r test.err.bagging.consensus`. As we can see, consensus vote made gave slightly better errors. In the probability vote, some trees were very certain of their decisions, while being wrong. These trees would get a large weight in the vote, and can be the reason the probability vote performs worse than consensus vote. Bagging has a lower test error than the decision tree. However, the discrepancy between test and train error is very large, which hints at a too complex model.
+
+### Random forest
+
+Now, I use Random forest to guide the decision. 
+
+```{r echo=TRUE}
+model.randomForest <- randomForest(diabetes~., data=train_str, mfinal=5)
+
+# train error bagging
+yhat <- predict(model.randomForest, train_str)
+train.err.randomForest <- 1-mean(yhat == train_str$diabetes)
+
+# test error bagging
+yhat <- predict(model.randomForest, test)
+test.err.randomForest <- 1-mean(yhat == test_str$diabetes) 
+```
+
+Random forest gave a train error `r train.err.randomForest`, and test error `r test.err.randomForest`. The test error is even better than bagging. The train error for the random forest is zero because random forest is fitted perfectly to the training data.
+
+### ADA boost
+
+Lastly, I use ADA boost.
+
+```{r echo=TRUE}
+model.ADA <- boosting(diabetes~., data=train_str)
+
+# train error ADA
+yhat <- predict(model.ADA, train_str)
+train.err.ADA <- yhat$error
+
+# test error ADA
+yhat <- predict(model.ADA, test_str)
+test.err.ADA <- yhat$error
+```
+
+ADA boost gave a train error `r train.err.ADA`, and test error `r test.err.ADA`. This is the worst of all the methods. ADA boost fits perfectly to the training data, so there is significant overfitting.
+
+## Model selection
+
+The model I would choose is the gam with smoothing splines. This model had the smallest test error. While the random forest had a low test error aswell, it is not easy to interpret. For the gam, it is easier to see the effects of the variables.
+
+## Repeat with corrected data
+
+Now, I use the corrected data set and repeat the analysis
+
+```{r echo=TRUE}
+# load corrected data
+data(PimaIndiansDiabetes2)
+PimaIndiansDiabetes2 <- na.omit(PimaIndiansDiabetes2)
+n <- nrow(PimaIndiansDiabetes2)
+
+# Change "neg"/"pos" to 0/1
+PimaIndiansDiabetes2$diabetes <- (PimaIndiansDiabetes2$diabetes == "pos")*1.0
+
+pos <- seq(n)[PimaIndiansDiabetes2$diabetes==1]
+neg <- seq(n)[PimaIndiansDiabetes2$diabetes==0]
+
+npos <- length(pos)
+nneg <- length(neg)
+
+# set a seed (sane as original)
+set.seed(10261609)
+
+# Train test split, 1/3 for test, 2/3 for train
+# Draw similar pos and neg ratio into train and test
+train.pos.idx <- sample(pos, size=floor(2/3*npos), replace=FALSE)
+train.neg.idx <- sample(neg, size=floor(2/3*nneg), replace=FALSE)
+
+train.idx <- sample(c(train.pos.idx, train.neg.idx))
+test.idx <- sample(-train.idx)
+
+train <- PimaIndiansDiabetes2[train.idx,]
+test <- PimaIndiansDiabetes2[test.idx,]
+
+ntrain=nrow(train)
+ntest=nrow(test)
+```
+
+## k-Nearest Neighbours
+
+```{r echo=FALSE}
+
+cv.k5.err <- 0
+cv.LOO.err <- 0
+
+k = 10
+
+# 5 fold XV
+fold.size <- ntrain%/%5
+index <- sample(rep(1:5, ceiling(ntrain/5)))[1:ntrain]
+for (fold in 1:5){
+  
+  train.fold = train[index != fold, ]
+  test.fold = train[index == fold, ]
+  
+  yhat <- knn(train.fold[,-9], test.fold[,-9], train.fold$diabetes, k=k)
+  cv.k5.err <- cv.k5.err + mean(yhat==test.fold$diabetes)/5
+}
+
+# LOO XV
+for (fold in 1:ntrain){
+  
+  train.fold <- train[-fold,]
+  test.fold <- train[fold,]
+  
+  yhat <- knn(train.fold[,-9], test.fold[,-9], train.fold$diabetes, k=k)
+  cv.LOO.err <- cv.LOO.err + mean(yhat==test.fold$diabetes)/ntrain
+}
+
+# Test data
+yhat <- knn(train[,-9], test[,-9], train$diabetes, k=k)
+test.err <- mean(yhat==test$diabetes)
+
+cv.k5.err <- 1-cv.k5.err
+cv.LOO.err <- 1-cv.LOO.err
+test.err <- 1-test.err
+```
+
+Again, with k = 10 the test error is `r test.err`. Cross-validation errors are `r cv.k5.err` for 5 folds and `r cv.LOO.err` for LOO. The test error is much smaller with the corrected data. But again, in the plot of test errors versus k, we can see that test error is at a local maximum at k=10. 
+
+## Generalised additive model with variable selection
+
+```{r echo=TRUE}
+start.gam <- gam(diabetes ~ 
+                s(pregnant, df=5) + 
+                s(glucose, df=5) + 
+                s(pressure, df=5) + 
+                s(triceps, df=5) + 
+                s(insulin, df=5)+ 
+                s(mass, df=5)+ 
+                s(pedigree, df=5)+ 
+                s(age, df=5),
+                family=binomial(),
+                data=train)
+
+scope_list = list(
+  "pregnant" = ~1 + pregnant + s(pregnant, df=2) + s(pregnant, df=3) + s(pregnant, df =4) + s(pregnant, df=5),
+  "glucose" = ~1 + glucose + s(glucose, df=2) + s(glucose, df=3) + s(glucose, df=4) + s(glucose, df=5),
+  "pressure" = ~1 + pressure + s(pressure, df=2) + s(pressure, df=3) + s(pressure, df=4) + s(pressure, df=5),
+  "triceps" = ~1 + triceps + s(triceps, df=2) + s(triceps, df=3) + s(triceps, df=4) + s(triceps, df=5),
+  "insulin" = ~1 + insulin + s(insulin, df=2) + s(insulin, df=3) + s(insulin, df=4) + s(insulin, df=5),
+  "mass" = ~1 + mass + s(mass, df=2) + s(mass, df=3) + s(mass, df=4) + s(mass, df=5),
+  "pedigree" = ~1 + pedigree + s(pedigree, df=2) + s(pedigree) + s(pedigree, df=4) + s(pedigree, df=5),
+  "age" = ~1 + age + s(age, df=2) + s(age, df=3) + s(age, df=4) + s(age, df=5)
+)
+
+best.gam <- step.Gam(start.gam, scope_list, direction = "backward", trace=0)
+
+yhat <- round(plogis(predict(best.gam, train)))
+gam.train.error <- 1 - mean(yhat==train$diabetes)
+
+yhat <- round(plogis(predict(best.gam, test)))
+gam.test.error <- 1 - mean(yhat==test$diabetes)
+
+summary(best.gam)
+```
+
+The gam model chooses that same variables as before, but with different degrees of freedom. Now, the model is less complex. This is because the model does not need to fit to unreasonable missing values (zeros). The gam test error is `r gam.test.error`, smaller than before, and identical to the kNN test error. Gam train error is `r gam.train.error`.
+
+### Trees
+
+```{r echo=TRUE}
+set.seed(2512)
+model.tree.full <- rpart(diabetes ~ ., data=train)
+best.cp <- model.tree.full$cptable[which.min(model.tree.full$cptable[,"xerror"]),
+                                   "CP"]
+model.tree.pruned <- prune(model.tree.full, cp=best.cp)
+
+# train error tree
+yhat <- round(predict(model.tree.pruned, train))
+train.err.tree.pruned <- 1-mean(yhat == train$diabetes)
+
+# test error tree
+yhat <- round(predict(model.tree.pruned, test))
+test.err.tree.pruned <- 1-mean(yhat == test$diabetes)
+
+prp(model.tree.pruned)
+```
+
+This tree is very similar in complexity as the previous. But the test error is smaller, at `r test.err.tree.pruned`. The train error is `r train.err.tree.pruned`
+
+### Bagging
+
+```{r echo=TRUE}
+# Go back to "pos"/"neg" response for the bagging functions
+data(PimaIndiansDiabetes2)
+PimaIndiansDiabetes2 <- na.omit(PimaIndiansDiabetes2)
+
+train_str <- PimaIndiansDiabetes2[train.idx,]
+test_str <- PimaIndiansDiabetes2[test.idx,]
+
+nbag = 25
+
+# bagging model
+model.bagging <- bagging(diabetes~., data=train_str, mfinal=25)
+
+# train error bagging, consensus vote
+yhat <- predict(model.bagging, train_str)
+train.err.bagging.consensus <- yhat$error
+
+# test error bagging, consensus vote
+yhat <- predict(model.bagging, test_str)
+test.err.bagging.consensus <- yhat$error
+
+# probability vote
+ytrain = numeric(ntrain)
+ytest = numeric(ntest)
+for (i in 1:nbag){
+  ytrain.i <- predict(model.bagging$trees[i], train_str)
+  # convert list to vector
+  ytrain.i <- unlist(ytrain.i)
+  # only consider positive response
+  ytrain.i <- ytrain.i[(ntrain+1):(2*ntrain)]
+  # add probability
+  ytrain <- ytrain + ytrain.i
+  
+  ytest.i <- predict(model.bagging$trees[i], test_str)
+  # convert list to vector
+  ytest.i <- unlist(ytest.i)
+  # only consider positive response
+  ytest.i <- ytest.i[(ntest+1):(2*ntest)]
+  # add probability
+  ytest <- ytest + ytest.i
+}
+# Make the weighted decision
+ytrain = round(ytrain/nbag)
+ytest = round(ytest/nbag)
+
+train.err.bagging.prob <- 1 - mean(ytrain == train$diabetes)
+test.err.bagging.prob <- 1 - mean(ytest == test$diabetes)
+```
+
+For bagging the error is still higher in the probability vote. In the consensus vote, the test error is `r test.err.bagging.consensus`, and the train error is `r train.err.bagging.consensus`. This is a smaller error than before.
+
+### Random forest
+
+```{r echo=TRUE}
+model.randomForest <- randomForest(diabetes~., data=train_str, mfinal=5)
+
+# train error bagging
+yhat <- predict(model.randomForest, train_str)
+train.err.randomForest <- 1-mean(yhat == train_str$diabetes)
+
+# test error bagging
+yhat <- predict(model.randomForest, test)
+test.err.randomForest <- 1-mean(yhat == test_str$diabetes) 
+```
+
+In random forest, the test error is `r test.err.randomForest` and the train error is `r train.err.randomForest`. This is better than before, and also better than the gam
+
+### ADA boost
+
+```{r echo=TRUE}
+model.ADA <- boosting(diabetes~., data=train_str)
+
+# train error ADA
+yhat <- predict(model.ADA, train_str)
+train.err.ADA <- yhat$error
+
+# test error ADA
+yhat <- predict(model.ADA, test_str)
+test.err.ADA <- yhat$error
+```
+
+The ada boost test error is `r test.err.ADA` and the train error is `r train.err.ADA`. This is also better than before, and now ADA boost is the best model in terms of test error.
+
+## Model selection
+
+In the corrected data set, all models perform better. Now, ADA boost is the best model. Here, I would choose ADA boost to make predictions because it has the best test error. However, it is harder to understand this model.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
